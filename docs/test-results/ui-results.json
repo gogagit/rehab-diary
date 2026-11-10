@@ -1,0 +1,14 @@
+{
+  "passed": true,
+  "scenarios": [
+    "login",
+    "patient diary create",
+    "progress charts",
+    "mobile width",
+    "logout",
+    "specialist feedback",
+    "plan create",
+    "assignment create"
+  ],
+  "consoleErrors": []
+}
