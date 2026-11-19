@@ -24,14 +24,14 @@ function home(){
   <header class="public-header"><div class="public-wrap public-bar">
    <a class="public-brand" href="#home" aria-label="Точка опоры — главная">${brand()}</a>
    <nav aria-label="Разделы главной"><a href="#about">О сервисе</a><a href="#benefits">Для кого</a><a href="#contacts">Контакты</a></nav>
-   <div class="actions public-auth">${state.user?'':'<button data-register>Регистрация</button>'}<button class="primary" data-enter>${enter}</button></div>
+   <div class="actions public-auth"><button class="primary" data-patient-enter>Я пациент</button>${state.user?'':'<button data-register>Регистрация</button>'}<button class="primary" data-enter>${enter}</button></div>
   </div></header>
   <main>
    <section class="public-wrap public-hero" aria-labelledby="welcome">
     <div><div class="eyebrow">Дневник реабилитации после травм и инсультов</div>
     <h1 id="welcome">Восстановление<br>в вашем ритме</h1>
     <p>Точка опоры помогает следовать плану занятий, замечать изменения в самочувствии и обсуждать ход восстановления со специалистом.</p>
-    <div class="actions"><button class="primary" data-enter>${state.user?'Открыть кабинет':'Войти в дневник'}</button>${state.user?'':'<button data-register>Создать аккаунт</button>'}</div></div>
+    <div class="actions"><button class="primary" data-patient-enter>Я пациент</button><button data-enter>${state.user?'Открыть кабинет':'Войти в дневник'}</button>${state.user?'':'<button data-register>Создать аккаунт</button>'}</div></div>
     <ol class="public-steps"><li><span>01</span><div><strong>Получите план</strong><br>Специалист подбирает упражнения и задаёт нагрузку.</div></li><li><span>02</span><div><strong>Записывайте результаты</strong><br>Отмечайте занятия, боль и самочувствие.</div></li><li><span>03</span><div><strong>Смотрите динамику</strong><br>Сравнивайте выполненные занятия с планом.</div></li></ol>
    </section>
    <section id="about" class="public-band"><div class="public-wrap"><div class="eyebrow">О сервисе</div><h2>План, дневник и прогресс в одном месте</h2><p>На занятии легко вспомнить, что получилось, а где возникли трудности. Дневник сохраняет эти наблюдения между визитами, чтобы пациент и специалист могли обсуждать конкретные записи. Нагрузку и её изменение определяет специалист.</p></div></section>
@@ -43,6 +43,7 @@ function home(){
   </main>
   <footer id="contacts" class="public-footer"><div class="public-wrap public-bar"><div>${brand()}<small>Учебный проект · демонстрационные контакты</small></div><address><strong>Связаться с командой</strong><br><a href="mailto:hello@tochka-opory.example">hello@tochka-opory.example</a></address></div></footer>
  </div>`;
+ bind('[data-patient-enter]',button=>openPatientDiary(button));
  bind('[data-enter]',()=>state.user?openCabinet():login());
  bind('[data-register]',registrationForm);
 }
@@ -65,7 +66,7 @@ function login(message=''){
    csrf=null;state.tab='overview';broadcastAccountChange();openCabinet();
   },'Войти сотруднику');
  $('#switch-register').onclick=registrationForm;
- $('#open-patient-diary').onclick=openPatientDiary;
+ $('#open-patient-diary').onclick=event=>openPatientDiary(event.currentTarget);
  const demoPasswords={doctor:'Doctor2026!',admin:'Admin2026!'};
  bind('[data-demo]',b=>{
   const form=$('#edit-form'),submit=form.querySelector('button[type=submit]');
@@ -91,18 +92,23 @@ function checkCredentials(data){
   !/[^\p{L}\p{N}\s\p{Cc}]/u.test(data.password))throw Error('Добавьте строчную и заглавную буквы, цифру и спецсимвол.');
  if(new TextEncoder().encode(data.password).length>72)throw Error('Пароль занимает больше 72 байт UTF-8.');
 }
-async function openPatientDiary(){
- const error=$('#form-error'),button=$('#open-patient-diary');
- button.disabled=true;error.textContent='';
+async function openPatientDiary(button){
+ const error=$('#modal').open?$('#form-error'):null;
+ button.disabled=true;
+ if(error)error.textContent='';
  try{
   await token();
   await api('/auth/device/resume','POST');
   const me=await api('/auth/me');
   state.user=me.user;
+  state.tab='overview';
   $('#modal').close();
   broadcastAccountChange();
-  openCabinet();
- }catch(e){error.textContent=e.message;}
+  await openCabinet();
+ }catch(e){
+  if(error&&error.isConnected)error.textContent=e.message;
+  else modal('Вход пациента','<p role="alert">'+esc(e.message)+'</p>',()=>{},'Понятно');
+ }
  finally{button.disabled=false;}
 }
 function pairDevice(invite){
