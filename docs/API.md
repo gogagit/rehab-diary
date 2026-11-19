@@ -5,7 +5,7 @@
 ## Вход и CSRF
 
 1. GET /auth/csrf без входа возвращает token и headerName.
-2. POST /auth/login, Content-Type application/x-www-form-urlencoded, поля username и password, заголовок из шага 1. Сохраняйте cookie сессии.
+2. Сотрудник отправляет POST /auth/login, Content-Type application/x-www-form-urlencoded, поля username и password, заголовок из шага 1. Сохраняйте cookie сессии.
 3. После успешного входа повторно запросите /auth/csrf: при аутентификации токен меняется.
 4. Для POST, PUT, PATCH, DELETE передавайте новый токен в X-XSRF-TOKEN.
 5. POST /auth/logout с токеном завершает сессию.
@@ -16,6 +16,12 @@ GET /auth/me возвращает user с полями id, username, fullName, r
 
 | Метод | Путь | Доступ и назначение |
 |---|---|---|
+| POST | /patients/{patientId}/device-invite | Администратор выдаёт одноразовый код привязки. Ответ содержит `token` |
+| POST | /auth/device | Привязка браузера. JSON содержит `token` и необязательное `name`. Успешный ответ 204 устанавливает cookie `rehab_device` |
+| GET | /patients/{patientId}/devices | Администратор получает список активных привязок и срок ожидающей ссылки |
+| DELETE | /patients/{patientId}/devices/{deviceId} | Администратор отзывает выбранную привязку |
+| DELETE | /patients/{patientId}/device-invite | Администратор отменяет ожидающую ссылку |
+| POST | /auth/device/resume | Открывает дневник повторно после выхода, используя сохранённую привязку |
 | POST | /auth/register | Публичная регистрация пациента; CSRF обязателен, сессия не создаётся |
 | GET | /patients | Пациент: своя карточка; специалист: свои пациенты; администратор: все |
 | POST | /patients | Специалист: закрепление за собой; администратор: за выбранным специалистом |
@@ -50,19 +56,19 @@ GET /auth/me возвращает user с полями id, username, fullName, r
 
 Самостоятельная регистрация (поле rehabilitationReason необязательно):
 
-    {"username":"ivan@example.test","password":"PatientPassword2026!","passwordConfirmation":"PatientPassword2026!","fullName":"Иван Петров","birthDate":"1995-03-12"}
+    {"username":"ivan@example.test","fullName":"Иван Петров","birthDate":"1995-03-12"}
 
 Создание специалиста:
 
     {"username":"doctor-new@example.test","password":"DoctorPassword2026!","passwordConfirmation":"DoctorPassword2026!","fullName":"Иван Петров"}
 
-Для этих двух запросов пароль должен иметь от 10 символов, занимать максимум 72 байта UTF-8 и содержать строчную и заглавную буквы, цифру и спецсимвол.
+При создании специалиста пароль должен иметь от 10 символов, занимать максимум 72 байта UTF-8 и содержать строчную и заглавную буквы, цифру и спецсимвол.
 
 Назначение специалиста: {"specialistId":2}. Чтобы снять назначение, передайте {"specialistId":null}.
 
 Создание пациента сотрудником:
 
-    {"username":"ivan@example.test","password":"PatientPassword2026!","fullName":"Иван Петров","birthDate":"1995-03-12","rehabilitationReason":"После травмы","notes":"","specialistId":2}
+    {"username":"ivan@example.test","fullName":"Иван Петров","birthDate":"1995-03-12","rehabilitationReason":"После травмы","notes":"","specialistId":2}
 
 Упражнение:
 

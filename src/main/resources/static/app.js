@@ -9,7 +9,7 @@ const num=n=>new Intl.NumberFormat('ru-RU',{maximumFractionDigits:1}).format(n??
 const staff=()=>state.user?.role!=='PATIENT';
 const badge=s=>'<span class="badge '+esc(s)+'">'+esc(names[s]||s)+'</span>';
 let csrf=null;
-async function token(){const r=await fetch('/api/auth/csrf');if(!r.ok)throw Error('Не удалось получить токен формы');csrf=await r.json();}
+async function token(){const r=await fetch('/api/auth/csrf',{cache:'no-store'});if(!r.ok)throw Error('Не удалось получить токен формы');csrf=await r.json();}
 async function api(path,method='GET',body){
  const headers={};if(method!=='GET'){if(!csrf)await token();headers[csrf.headerName]=csrf.token;if(body!==undefined)headers['Content-Type']='application/json';}
  const r=await fetch('/api'+path,{method,headers,body:body===undefined?undefined:JSON.stringify(body)});
@@ -48,22 +48,25 @@ function home(){
 }
 function openCabinet(){if(location.hash==='#cabinet')return start();location.hash='cabinet';}
 function showHome(){location.hash='home';home();window.scrollTo(0,0);}
-function login(username='',message=''){
- modal('Войти в дневник',
+function login(message=''){
+ modal('Вход в «Точку опоры»',
   (message?'<p class="auth-success" role="status">'+esc(message)+'</p>':'')+
-  field('Email или логин','username','text',username,'required autocomplete="username"')+
+  '<div class="actions"><button type="button" class="primary" id="open-patient-diary">Открыть мой дневник</button></div>'+
+  '<p class="form-hint">На новом устройстве откройте ссылку, которую выдал администратор.</p><h3>Вход для сотрудников</h3>'+
+  field('Email или логин','username','text','','required autocomplete="username"')+
   field('Пароль','password','password','','required autocomplete="current-password"')+
   '<p class="form-hint">Впервые здесь? <button type="button" class="btn-link" id="switch-register">Создать аккаунт пациента</button></p>'+
-  '<div class="demo">Демонстрационный вход<div class="actions"><button type="button" data-demo="patient">Пациент</button><button type="button" data-demo="doctor">Специалист</button><button type="button" data-demo="admin">Администратор</button></div></div>', 
+  '<div class="demo">Демонстрационный вход<div class="actions"><button type="button" data-demo="doctor">Специалист</button><button type="button" data-demo="admin">Администратор</button></div></div>',
   async data=>{
    await token();
    const r=await fetch('/api/auth/login',{method:'POST',headers:{[csrf.headerName]:csrf.token,'Content-Type':'application/x-www-form-urlencoded'},
     body:new URLSearchParams({...data,username:data.username.trim().toLowerCase()})});
    if(!r.ok)throw Error((await r.json()).detail||'Ошибка входа');
-   csrf=null;state.tab='overview';openCabinet();
-  },'Войти');
+   csrf=null;state.tab='overview';broadcastAccountChange();openCabinet();
+  },'Войти сотруднику');
  $('#switch-register').onclick=registrationForm;
- const demoPasswords={patient:'Patient2026!',doctor:'Doctor2026!',admin:'Admin2026!'};
+ $('#open-patient-diary').onclick=openPatientDiary;
+ const demoPasswords={doctor:'Doctor2026!',admin:'Admin2026!'};
  bind('[data-demo]',b=>{
   const form=$('#edit-form'),submit=form.querySelector('button[type=submit]');
   if(submit.disabled)return;
@@ -72,10 +75,12 @@ function login(username='',message=''){
   form.requestSubmit(submit);
  });
 }
-function credentialsFields(){
+function identityFields(){
  return field('ФИО (фамилия, имя, отчество)','fullName','text','','required maxlength="150" autocomplete="name"')+
-  field('Email','username','email','','required maxlength="254" autocomplete="email"')+
-  field('Пароль','password','password','','required minlength="10" maxlength="72" autocomplete="new-password"')+
+  field('Email','username','email','','required maxlength="254" autocomplete="email"');
+}
+function credentialsFields(){
+ return identityFields()+field('Пароль','password','password','','required minlength="10" maxlength="72" autocomplete="new-password"')+
   '<p class="form-hint">От 10 символов: строчная и заглавная буквы, цифра и спецсимвол. Максимум 72 байта UTF-8.</p>'+
   field('Повторите пароль','passwordConfirmation','password','','required maxlength="72" autocomplete="new-password"');
 }
@@ -86,12 +91,47 @@ function checkCredentials(data){
   !/[^\p{L}\p{N}\s\p{Cc}]/u.test(data.password))throw Error('Добавьте строчную и заглавную буквы, цифру и спецсимвол.');
  if(new TextEncoder().encode(data.password).length>72)throw Error('Пароль занимает больше 72 байт UTF-8.');
 }
+async function openPatientDiary(){
+ const error=$('#form-error'),button=$('#open-patient-diary');
+ button.disabled=true;error.textContent='';
+ try{
+  await token();
+  await api('/auth/device/resume','POST');
+  const me=await api('/auth/me');
+  state.user=me.user;
+  $('#modal').close();
+  broadcastAccountChange();
+  openCabinet();
+ }catch(e){error.textContent=e.message;}
+ finally{button.disabled=false;}
+}
+function pairDevice(invite){
+ modal('Привязать устройство',
+  '<p>После привязки вы сможете открывать свой дневник в этом браузере одной кнопкой.</p>'+
+  '<p class="form-hint">Если здесь открыт другой кабинет, выйдите из него и откройте ссылку снова.</p>'+
+  field('Название устройства (необязательно)','name','text','','maxlength="80" placeholder="Например, мой телефон"'),
+  async data=>{
+   await token();
+   await api('/auth/device','POST',{token:invite,name:data.name});
+   const profile=await fetch('/api/auth/me',{cache:'no-store'});
+   if(profile.status===401)throw Error('Браузер не сохранил вход. Разрешите cookie для сайта и попросите новую ссылку.');
+   if(!profile.ok)throw Error('Устройство привязано. Откройте дневник с главной страницы.');
+   const me=await profile.json();
+   state.tab='overview';
+   await start(me);
+   history.replaceState(null,'',location.pathname+location.search+'#cabinet');
+   render();
+   window.scrollTo(0,0);
+   broadcastAccountChange();
+   toast('Устройство привязано. Дневник открыт.');
+  },'Запомнить это устройство');
+}
 function registrationForm(){
- modal('Регистрация пациента',credentialsFields()+
+ modal('Регистрация пациента',identityFields()+
   field('Дата рождения','birthDate','date','','required autocomplete="bday"')+
   field('Причина реабилитации (необязательно)','rehabilitationReason','text','','maxlength="200"')+
-  '<p class="form-hint">После регистрации войдите с новым паролем. Специалиста назначит администратор. <button type="button" class="btn-link" id="switch-login">Уже есть аккаунт</button></p>',
-  async data=>{checkCredentials(data);await api('/auth/register','POST',data);login(data.username,'Аккаунт создан. Теперь войдите с новым паролем.');},'Зарегистрироваться');
+  '<p class="form-hint">После регистрации администратор выдаст одноразовую ссылку для входа и назначит специалиста. <button type="button" class="btn-link" id="switch-login">Уже есть аккаунт</button></p>',
+  async data=>{await api('/auth/register','POST',data);login('Аккаунт создан. Попросите администратора выдать ссылку для первого входа.');},'Зарегистрироваться');
  $('#switch-login').onclick=()=>login();
 }
 async function start(me){me??=await api('/auth/me');state.user=me.user;state.today=me.today;state.patients=await api('/patients');state.exercises=await api('/exercises');
@@ -110,12 +150,26 @@ function render(){
  tabs.push(['chat','Сообщения']);
  const contextual=['overview','plans','diary','progress'].includes(state.tab);
  const picker=!contextual?'':staff()&&state.patients.length?'<label>Пациент <select id="patient-picker" aria-label="Выбрать пациента">'+state.patients.map(p=>'<option value="'+p.id+'" '+(p.id===state.patientId?'selected':'')+'>'+esc(p.fullName)+'</option>').join('')+'</select></label>':staff()?'':'<p>Ваш специалист: '+esc(patient()?.specialistName||'не назначен')+'</p>';
- app.innerHTML='<div class="shell"><aside class="sidebar">'+brand()+'<nav aria-label="Основное меню">'+tabs.map(([id,t])=>'<button class="nav '+(state.tab===id?'active':'')+'" data-tab="'+id+'">'+t+(id==='chat'?'<span id="chat-badge" class="unread-dot" hidden></span>':'')+'</button>').join('')+'</nav><div class="sidebar-note">Маленькие шаги.<br>Заметные изменения.<p style="margin-top:18px">Учебная система учёта.<br>Нагрузку назначает специалист.</p></div><div class="user"><strong>'+esc(state.user.fullName)+'</strong><small>'+names[state.user.role]+'</small></div></aside><main class="main"><header class="topbar"><p>● '+fmt(state.today)+'</p>'+picker+'<div class="actions"><a class="btn-link" href="#home">На главную</a><button class="btn-link" id="logout">Выйти</button></div></header><div id="content"></div></main></div>';
+ app.innerHTML='<div class="shell"><aside class="sidebar">'+brand()+'<nav aria-label="Основное меню">'+tabs.map(([id,t])=>'<button class="nav '+(state.tab===id?'active':'')+'" data-tab="'+id+'">'+t+(id==='chat'?'<span id="chat-badge" class="unread-dot" hidden></span>':'')+'</button>').join('')+'</nav><div class="sidebar-note">Маленькие шаги.<br>Заметные изменения.<p style="margin-top:18px">Учебная система учёта.<br>Нагрузку назначает специалист.</p></div><div class="user"><strong>'+esc(state.user.fullName)+'</strong><small>'+names[state.user.role]+'</small></div></aside><main class="main"><header class="topbar"><p>● '+fmt(state.today)+'</p>'+picker+'<div class="actions"><a class="btn-link" href="#home">На главную</a><button class="btn-link" id="logout">Выйти</button>'+(staff()?'':'<button class="btn-link" id="forget-device">Забыть устройство</button>')+'</div></header><div id="content"></div></main></div>';
  bind('[data-tab]',b=>{state.tab=b.dataset.tab;render();});
- $('#logout').onclick=async()=>{try{await api('/auth/logout','POST');state.user=null;chatKey=null;state.patientId=null;state.planId=null;state.tab='overview';csrf=null;showHome();}catch(e){toast(e.message)}};
+ $('#logout').onclick=()=>logout().catch(e=>toast(e.message));
+ if($('#forget-device'))$('#forget-device').onclick=()=>confirmAction('Забыть устройство?',
+  'При следующем входе в этом браузере понадобится новая ссылка от администратора.',()=>logout(true));
  if($('#patient-picker'))$('#patient-picker').onchange=async e=>{state.patientId=Number(e.target.value);state.planId=null;try{await loadPlans();render()}catch(e){toast(e.message)}};
  ({overview,plans:plansPage,diary,progress:progressPage,patients:patientsPage,exercises:exercisesPage,specialists:specialistsPage,audit:auditPage,chat:chatPage}[state.tab]||overview)();
  if(state.tab!=='chat')void refreshThreads();
+}
+async function logout(forget=false){
+ await token();
+ await api('/auth/logout'+(forget?'?forget=true':''),'POST');
+ state.user=null;
+ chatKey=null;
+ state.patientId=null;
+ state.planId=null;
+ state.tab='overview';
+ csrf=null;
+ broadcastAccountChange();
+ showHome();
 }
 function heading(title,description,buttons=''){return '<div class="page-head"><div><div class="eyebrow">Дневник реабилитации</div><h1>'+title+'</h1><p>'+description+'</p></div><div class="actions">'+buttons+'</div></div>';}
 function empty(text,sub=''){return '<div class="empty"><strong>'+esc(text)+'</strong>'+esc(sub)+'</div>';}
@@ -189,7 +243,7 @@ function patientsPage(){
  const admin=state.user.role==='ADMIN';
  $('#content').innerHTML=heading('Пациенты',admin?'Все пациенты, включая тех, кому ещё не назначен специалист.':'Карточки пациентов, закреплённых за вами.','<button class="primary" id="new-patient">+ Добавить пациента</button>')+
  (state.patients.length?'<div class="cards">'+state.patients.map(p=>'<section class="card"><h3>'+esc(p.fullName)+'</h3><p class="muted">'+esc(p.rehabilitationReason||'Причина не указана')+'</p><small>Дата рождения: '+fmt(p.birthDate)+'<br>Специалист: '+esc(p.specialistName||'не назначен')+'</small><p style="margin-top:14px">'+esc(p.notes||'')+'</p>'+courseReview(p.finishedCourse)+'<div class="actions"><button data-patient="'+p.id+'">Открыть планы →</button>'+
- (admin?'<button data-assign="'+p.id+'">Назначить специалиста</button><button class="danger" data-delete-patient="'+p.id+'">Удалить</button>':'')+'</div></section>').join('')+'</div>':empty('Пациентов пока нет'));
+ (admin?'<button data-assign="'+p.id+'">Назначить специалиста</button><button data-devices="'+p.id+'">Устройства</button><button class="danger" data-delete-patient="'+p.id+'">Удалить</button>':'')+'</div></section>').join('')+'</div>':empty('Пациентов пока нет'));
  $('#new-patient').onclick=patientForm;
  bind('[data-patient]',async b=>{state.patientId=Number(b.dataset.patient);state.planId=null;state.tab='plans';await loadPlans();render()});
  bind('[data-assign]',async b=>{
@@ -197,6 +251,7 @@ function patientsPage(){
   modal('Специалист для пациента','<p>'+esc(p.fullName)+'</p>'+select('Специалист','specialistId',[['','Не назначен'],...specialists.map(s=>[s.id,s.fullName])],p.specialistId??''),
    async data=>{await api('/patients/'+p.id+'/specialist','PATCH',{specialistId:data.specialistId?Number(data.specialistId):null});await start();toast('Назначение обновлено');});
  });
+ bind('[data-devices]',b=>patientDevices(Number(b.dataset.devices)));
  bind('[data-delete-patient]',b=>{
   const p=state.patients.find(p=>p.id===Number(b.dataset.deletePatient));
   confirmAction('Удалить пациента?',p.fullName+'. Планы и записи дневника будут удалены, вход станет недоступен.',
@@ -220,8 +275,46 @@ async function specialistsPage(){
   });
  }catch(e){const list=content.querySelector('#specialist-list');if(list)list.innerHTML=empty(e.message);}
 }
+async function patientDevices(patientId){
+ const base='/patients/'+patientId;
+ const patient=state.patients.find(p=>p.id===patientId);
+ const access=await api(base+'/devices');
+ const formatTime=time=>esc(new Date(time).toLocaleString('ru-RU',{dateStyle:'short',timeStyle:'short'}));
+ const rows=access.devices.map(device=>'<section class="card"><strong>'+esc(device.name)+'</strong>'+
+  '<p class="muted">'+(device.linkedAt?'Привязано '+formatTime(device.linkedAt)+'<br>':'')+
+  'Доступ до '+formatTime(device.expiresAt)+'</p>'+
+  '<button type="button" data-revoke-device="'+device.id+'" class="danger">Отозвать доступ</button></section>').join('');
+ const pending=access.inviteExpiresAt?'<p>Ссылка действует до '+formatTime(access.inviteExpiresAt)+'</p>'+
+  '<button type="button" id="cancel-device-invite">Отменить ссылку</button>':'';
+ modal('Устройства пациента','<p>'+esc(patient.fullName)+'</p>'+
+  (rows?'<div class="cards">'+rows+'</div>':'<p>Активных устройств пока нет.</p>')+pending,
+  async()=>{
+   const invitation=await api(base+'/device-invite','POST');
+   const link=new URL(location.pathname,location.origin);
+   link.hash='device='+invitation.token;
+   modal('Ссылка для пациента',
+    '<p>Ссылка действует 15 минут. Пациент должен открыть её в браузере, который хочет привязать.</p>'+
+    field('Одноразовая ссылка','deviceLink','text',link.href,'readonly'),
+    async()=>{await navigator.clipboard.writeText(link.href);toast('Ссылка скопирована');await patientDevices(patientId);},'Скопировать');
+   $('#f-deviceLink').select();
+  },access.inviteExpiresAt?'Заменить ссылку':'Выдать ссылку');
+ bind('[data-revoke-device]',b=>{
+  const device=access.devices.find(d=>d.id===Number(b.dataset.revokeDevice));
+  confirmAction('Отозвать доступ?',device.name,
+   async()=>{await api(base+'/devices/'+device.id,'DELETE');await patientDevices(patientId);});
+ });
+ const cancel=$('#cancel-device-invite');
+ if(cancel)cancel.onclick=async()=>{
+  try{await api(base+'/device-invite','DELETE');await patientDevices(patientId);}
+  catch(e){$('#form-error').textContent=e.message;}
+ };
+}
 function exercisesPage(){
- $('#content').innerHTML=heading('Упражнения','Справочник для составления индивидуальных планов.','<button class="primary" id="new-exercise">+ Добавить упражнение</button>')+'<div class="cards">'+state.exercises.map(e=>'<section class="card"><span class="badge">'+units[e.unit]+'</span><h3 style="margin-top:14px">'+esc(e.title)+'</h3><p class="muted">'+esc(e.instructions)+'</p></section>').join('')+'</div>';$('#new-exercise').onclick=exerciseForm;
+ $('#content').innerHTML=heading('Упражнения','Справочник для составления индивидуальных планов.','<button class="primary" id="new-exercise">+ Добавить упражнение</button>')+field('Поиск по названию','exerciseSearch','search')+'<div class="cards" id="exercise-cards"></div>';$('#new-exercise').onclick=exerciseForm;
+ const search=$('#f-exerciseSearch');
+ const update=()=>{const matches=state.exercises.filter(e=>e.title.toLowerCase().includes(search.value.trim().toLowerCase()));
+ $('#exercise-cards').innerHTML=matches.map(e=>'<section class="card"><span class="badge">'+units[e.unit]+'</span><h3 style="margin-top:14px">'+esc(e.title)+'</h3><p class="muted">'+esc(e.instructions)+'</p></section>').join('')||empty('Упражнения не найдены');};
+ search.oninput=update;update();
 }
 async function auditPage(page=0){
  $('#content').innerHTML=heading('Журнал действий','Кто и когда изменял данные. Текст дневника и пароли в журнал не записываются.')+'<p>Загрузка…</p>';
@@ -258,8 +351,14 @@ function planForm(){
 function assignmentForm(){
  const used=new Set(state.detail.assignments.map(a=>a.title));const available=state.exercises.filter(e=>!used.has(e.title));
  if(!available.length){toast('Добавьте новое упражнение в справочник');return;}
- modal('Назначить упражнение',select('Упражнение','exerciseId',available.map(e=>[e.id,e.title+' · '+units[e.unit]]))+field('Целевая нагрузка в день','targetAmount','number','10','required min="0.01" max="100000" step="0.01"')+'<p class="form-hint">Упражнение назначается на каждый день периода плана.</p>',
- async data=>{await api('/plans/'+state.planId+'/assignments','POST',{exerciseId:Number(data.exerciseId),targetAmount:Number(data.targetAmount)});await loadDetail();render();toast('Упражнение добавлено');});
+ modal('Назначить упражнение',field('Поиск по названию','assignmentSearch','search')+select('Упражнение','exerciseId',available.map(e=>[e.id,e.title+' · '+units[e.unit]]))+field('Целевая нагрузка в день','targetAmount','number','10','required min="0.01" max="100000" step="0.01"')+'<p class="form-hint">Упражнение назначается на каждый день периода плана.</p>',
+ async data=>{if(!data.exerciseId)throw Error('Выберите упражнение.');await api('/plans/'+state.planId+'/assignments','POST',{exerciseId:Number(data.exerciseId),targetAmount:Number(data.targetAmount)});await loadDetail();render();toast('Упражнение добавлено');});
+ const search=$('#f-assignmentSearch'), selection=$('#f-exerciseId');
+ search.oninput=()=>{
+  const matches=available.filter(e=>e.title.toLowerCase().includes(search.value.trim().toLowerCase()));
+  selection.replaceChildren(...matches.map(e=>new Option(e.title+' · '+units[e.unit],e.id)));
+  if(!matches.length)selection.add(new Option('Упражнения не найдены',''));
+ };
 }
 function entryForm(assignmentId=null,entry=null){
  if(!state.detail)return;const p=state.detail.plan;const max=state.today>p.endsOn?p.endsOn:state.today;
@@ -281,7 +380,7 @@ function feedbackForm(entry){
 async function patientForm(){
  try{const specialists=await api('/specialists');if(!specialists.length)throw Error('Сначала добавьте специалиста.');modal('Добавить пациента',field('ФИО (фамилия, имя, отчество)','fullName','text','','required maxlength="150"')+field('Дата рождения','birthDate','date','','required')+field('Причина реабилитации','rehabilitationReason','text','','required maxlength="200"')+
  select('Специалист','specialistId',specialists.filter(s=>state.user.role==='ADMIN'||s.id===state.user.id).map(s=>[s.id,s.fullName]),state.user.id)+
- '<div class="row">'+field('Email','username','email','','required maxlength="254" autocomplete="email"')+field('Пароль','password','password','','required minlength="10" maxlength="72" autocomplete="new-password"')+'</div>'+area('Примечание','notes','','maxlength="2000"'),
+ field('Email','username','email','','required maxlength="254" autocomplete="email"')+area('Примечание','notes','','maxlength="2000"'),
  async data=>{const p=await api('/patients','POST',{...data,specialistId:Number(data.specialistId)});state.patientId=p.id;state.planId=null;state.patients=await api('/patients');await loadPlans();render();toast('Пациент создан');});}catch(e){toast(e.message)}
 }
 function exerciseForm(){
@@ -393,6 +492,11 @@ setInterval(pollChat,5000);
 document.addEventListener('visibilitychange',pollChat);
 async function route(){
  try{
+  const invite=location.hash.match(/^#device=([A-Za-z0-9_-]{43})$/);
+  if(invite){
+   history.replaceState(null,'',location.pathname+location.search+'#home');
+   home();pairDevice(invite[1]);return;
+  }
   if(location.hash==='#cabinet'){
    const r=await fetch('/api/auth/me');
    if(r.status===401){state.user=null;showHome();login();return;}
@@ -406,9 +510,18 @@ async function route(){
   }
  }catch(e){showHome();toast(e.message);}
 }
+function broadcastAccountChange(){
+ try{localStorage.setItem('rehab-account-changed',String(Date.now()));}catch{}
+}
+window.addEventListener('storage',event=>{
+ if(event.key==='rehab-account-changed'){
+  history.replaceState(null,'',location.pathname+location.search);
+  location.reload();
+ }
+});
 window.addEventListener('hashchange',route);
 (async()=>{
- if(location.hash==='#cabinet'){await route();return;}
+ if(location.hash==='#cabinet'||location.hash.startsWith('#device=')){await route();return;}
  home();
  try{const r=await fetch('/api/auth/me');if(r.ok){state.user=(await r.json()).user;if($('.landing')){home();const id=location.hash.slice(1);if(id)document.getElementById(id)?.scrollIntoView();}}}catch{}
 })();

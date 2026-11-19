@@ -25,7 +25,6 @@ app:
   demo-data: ${DEMO_DATA:true}
   admin-password: ${ADMIN_PASSWORD:Admin2026!}
   specialist-password: ${SPECIALIST_PASSWORD:Doctor2026!}
-  patient-password: ${PATIENT_PASSWORD:Patient2026!}
 springdoc:
   swagger-ui:
     csrf:

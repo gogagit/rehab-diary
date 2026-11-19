@@ -7,8 +7,6 @@ public final class Requests {
     public record RegistrationInput(
         @NotBlank @Email(message="укажите корректный email") @Size(max=254) String username,
         @NotBlank @Size(max=150) String fullName,
-        @NotBlank @Size(min=10,max=72) String password,
-        @NotBlank @Size(max=72) String passwordConfirmation,
         @NotNull @Past LocalDate birthDate,
         @Size(max=200) String rehabilitationReason) {}
     public record SpecialistInput(
@@ -19,7 +17,6 @@ public final class Requests {
     public record SpecialistAssignment(Long specialistId) {}
     public record PatientInput(
         @NotBlank @Email(message="укажите корректный email") @Size(max=254) String username,
-        @NotBlank @Size(min=10,max=72) String password,
         @NotBlank @Size(max=150) String fullName,
         @NotNull @Past LocalDate birthDate,
         @NotBlank @Size(max=200) String rehabilitationReason,

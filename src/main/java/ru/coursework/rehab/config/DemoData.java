@@ -15,7 +15,6 @@ public class DemoData implements CommandLineRunner {
     @Value("${app.demo-data}") private boolean demo;
     @Value("${app.admin-password}") private String adminPassword;
     @Value("${app.specialist-password}") private String specialistPassword;
-    @Value("${app.patient-password}") private String patientPassword;
     public DemoData(AccountRepository accounts,PatientRepository patients,ExerciseRepository exercises,PlanRepository plans,
         AssignmentRepository assignments,EntryRepository entries,PasswordEncoder encoder,Clock clock) {
         this.accounts=accounts;this.patients=patients;this.exercises=exercises;this.plans=plans;this.assignments=assignments;this.entries=entries;this.encoder=encoder;this.clock=clock;
@@ -23,6 +22,7 @@ public class DemoData implements CommandLineRunner {
     @Override @Transactional public void run(String... args) {
         if(accounts.count()==0) seedBase();
         if(demo) accounts.findByUsername("doctor").filter(a->a.deletedAt==null).ifPresent(this::seedFinishedCourses);
+        seedExerciseCatalog();
     }
     private void seedBase() {
         account("admin","Администратор",Account.Role.ADMIN,adminPassword);
@@ -81,11 +81,35 @@ public class DemoData implements CommandLineRunner {
         });
     }
     private Account account(String login,String name,Account.Role role,String password) {
-        Account a=new Account();a.username=login;a.fullName=name;a.role=role;a.passwordHash=encoder.encode(password);return accounts.save(a);
+        Account a=new Account();a.username=login;a.fullName=name;a.role=role;a.passwordHash=password==null?"":encoder.encode(password);return accounts.save(a);
     }
     private Patient patient(String login,String name,Account specialist,String reason,LocalDate birthDate) {
-        Patient p=new Patient();p.account=account(login,name,Account.Role.PATIENT,patientPassword);p.specialist=specialist;p.rehabilitationReason=reason;p.birthDate=birthDate;p.notes="Вымышленный пациент для демонстрации";return patients.save(p);
+        Patient p=new Patient();p.account=account(login,name,Account.Role.PATIENT,null);p.specialist=specialist;p.rehabilitationReason=reason;p.birthDate=birthDate;p.notes="Вымышленный пациент для демонстрации";return patients.save(p);
     }
+    private void seedExerciseCatalog() {
+        var titles = new java.util.HashSet<String>();
+        exercises.findAllByOrderByTitle().forEach(exercise -> titles.add(exercise.title));
+        addTemplates(titles, Exercise.Unit.REPETITIONS,
+            "Сведение и разведение пальцев", "Касание большим пальцем остальных пальцев",
+            "Перекладывание лёгких предметов", "Захват и отпускание лёгкого предмета",
+            "Повороты предплечья", "Сгибание и разгибание локтя",
+            "Подъём руки вперёд", "Отведение руки в сторону",
+            "Разгибание колена сидя", "Сгибание ноги в колене",
+            "Подъём носков сидя", "Подъём пяток сидя",
+            "Пересаживание со стула на стул", "Вставание со стула");
+        addTemplates(titles, Exercise.Unit.MINUTES,
+            "Удержание положения сидя", "Перенос веса с опорой", "Ходьба с сопровождением");
+        addTemplates(titles, Exercise.Unit.METERS,
+            "Ходьба по ровной поверхности", "Ходьба с назначенным средством опоры");
+    }
+
+    private void addTemplates(java.util.Set<String> titles, Exercise.Unit unit, String... names) {
+        String instructions = "Отметьте фактическую нагрузку. Положение, опору и условия выполнения указывает специалист.";
+        for (String name : names) {
+            if (titles.add(name)) exercise(name, instructions, unit);
+        }
+    }
+
     private void exercise(String title,String instructions,Exercise.Unit unit) {
         Exercise e=new Exercise();e.title=title;e.instructions=instructions;e.unit=unit;exercises.save(e);
     }

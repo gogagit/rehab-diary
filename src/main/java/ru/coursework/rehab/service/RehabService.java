@@ -69,7 +69,7 @@ public class RehabService {
         Account owner=lockedSpecialist(in.specialistId());
         Account actor=actor();
         if(actor.role!=Account.Role.ADMIN&&!owner.id.equals(actor.id)) throw new AccessDeniedException("Можно закрепить пациента только за собой");
-        Account a=createAccount(in.username(),in.fullName(),in.password(),Account.Role.PATIENT);
+        Account a=createAccount(in.username(),in.fullName(),null,Account.Role.PATIENT);
         Patient p=new Patient(); p.account=a; p.specialist=owner; p.birthDate=in.birthDate();
         p.rehabilitationReason=in.rehabilitationReason().trim(); p.notes=in.notes(); patients.saveAndFlush(p);
         audit("CREATE","PATIENT",p.id); return PatientView.of(p);
@@ -88,14 +88,13 @@ public class RehabService {
     }
     private Account createAccount(String username,String fullName,String password,Account.Role role) {
         String login=username.toLowerCase(Locale.ROOT);
-        if(password.getBytes(java.nio.charset.StandardCharsets.UTF_8).length>72) throw invalid("Пароль должен занимать не более 72 байт в UTF-8");
+        if(password!=null && password.getBytes(java.nio.charset.StandardCharsets.UTF_8).length>72) throw invalid("Пароль должен занимать не более 72 байт в UTF-8");
         if(accounts.existsByUsername(login)) throw conflict("Логин уже занят");
-        Account a=new Account(); a.username=login; a.fullName=fullName.trim(); a.role=role; a.passwordHash=encoder.encode(password);
+        Account a=new Account(); a.username=login; a.fullName=fullName.trim(); a.role=role; a.passwordHash=password==null?"":encoder.encode(password);
         return accounts.saveAndFlush(a);
     }
     @Transactional public void register(RegistrationInput in) {
-        checkPassword(in.password(),in.passwordConfirmation());
-        Account a=createAccount(in.username(),in.fullName(),in.password(),Account.Role.PATIENT);
+        Account a=createAccount(in.username(),in.fullName(),null,Account.Role.PATIENT);
         Patient p=new Patient(); p.account=a; p.birthDate=in.birthDate();
         p.rehabilitationReason=in.rehabilitationReason()==null?"":in.rehabilitationReason().trim();
         patients.saveAndFlush(p);
@@ -132,12 +131,17 @@ public class RehabService {
         plans.flush();
         em.createQuery("select m from ChatMessage m where m.patient.id = :id",ChatMessage.class).setParameter("id",id).getResultList().forEach(em::remove);
         em.flush();
+        accounts.findLockedById(p.account.id).orElseThrow(BusinessException::missing);
+        em.createQuery("delete from TrustedDevice d where d.account.id = :id")
+            .setParameter("id",p.account.id).executeUpdate();
         patients.delete(p); patients.flush(); retire(p.account);
         audit("DELETE","PATIENT",id);
     }
     // Reserve the old login so an existing session cannot inherit a newly created account.
     private void retire(Account a) {
         a.deletedAt=OffsetDateTime.now(clock); a.fullName="Удалённая учётная запись"; a.passwordHash="";
+        a.deviceHash=null; a.deviceExpiresAt=null;
+        a.deviceInviteHash=null; a.deviceInviteExpiresAt=null;
     }
     public List<ExerciseView> exercises() { actor(); return exercises.findAllByOrderByTitle().stream().map(ExerciseView::of).toList(); }
     @Transactional public ExerciseView createExercise(ExerciseInput in) {

@@ -46,11 +46,11 @@ class ApiIntegrationTest {
         mvc.perform(get("/api/auth/csrf")).andExpect(status().isOk()).andExpect(jsonPath("$.token").isNotEmpty());
     }
     @Test void realPasswordLoginWorks() throws Exception {
-        mvc.perform(post("/api/auth/login").with(csrf()).param("username","patient").param("password","Patient2026!"))
+        mvc.perform(post("/api/auth/login").with(csrf()).param("username","admin").param("password","Admin2026!"))
             .andExpect(status().isOk()).andExpect(jsonPath("$.authenticated").value(true));
     }
     @Test void wrongPasswordFails() throws Exception {
-        mvc.perform(post("/api/auth/login").with(csrf()).param("username","patient").param("password","wrong"))
+        mvc.perform(post("/api/auth/login").with(csrf()).param("username","admin").param("password","wrong"))
             .andExpect(status().isUnauthorized());
     }
     @Test @WithMockUser("patient") void patientSeesOnlyOwnCard() throws Exception {
@@ -154,7 +154,7 @@ class ApiIntegrationTest {
     @Test @WithMockUser("admin") void adminReadsAudit() throws Exception { mvc.perform(get("/api/audit")).andExpect(status().isOk()); }
     @Test @WithMockUser("doctor") void patientCreationAndDuplicateLogin() throws Exception {
         Long doc=accounts.findByUsername("doctor").orElseThrow().id;
-        var body=Map.of("username","newpatient@example.test","password","SafePassword2026!","fullName","Тестовый пациент",
+        var body=Map.of("username","newpatient@example.test","fullName","Тестовый пациент",
             "birthDate","1990-01-01","rehabilitationReason","Учебная запись","notes","","specialistId",doc);
         mvc.perform(postJson("/api/patients",body)).andExpect(status().isCreated());
         mvc.perform(postJson("/api/patients",body)).andExpect(status().isConflict());
@@ -177,35 +177,74 @@ class ApiIntegrationTest {
         return Map.of("username",login,"fullName","Тестовая учётная запись",
             "password","SecurePass2026!","passwordConfirmation","SecurePass2026!");
     }
-    @Test void registrationRequiresValidPasswordAndSeparateLogin() throws Exception {
-        var body=new HashMap<>(credentials("NewPublicPatient@example.test"));
-        body.put("birthDate","1990-01-01");
-        body.put("username","invalid-address");
+    @Test void registrationDoesNotCreateAnAuthenticatedSession() throws Exception {
+        var body=new HashMap<>(Map.of("username","invalid-address","fullName","Тестовый пациент","birthDate","1990-01-01"));
         mvc.perform(postJson("/api/auth/register",body)).andExpect(status().isBadRequest());
         body.put("username","NewPublicPatient@example.test");
-        for(String weak:List.of("alllower2026!","ALLUPPER2026!","NoDigitsHere!","NoSymbol2026")) {
-            body.put("password",weak); body.put("passwordConfirmation",weak);
-            mvc.perform(postJson("/api/auth/register",body)).andExpect(status().isBadRequest());
-        }
-        body.putAll(credentials("NewPublicPatient@example.test"));
-        body.put("passwordConfirmation","Mismatch2026!");
-        mvc.perform(postJson("/api/auth/register",body)).andExpect(status().isBadRequest());
-        body.putAll(credentials("NewPublicPatient@example.test"));
         mvc.perform(post("/api/auth/register").contentType("application/json").content(json.writeValueAsString(body)))
             .andExpect(status().isForbidden());
         var registered=mvc.perform(postJson("/api/auth/register",body)).andExpect(status().isNoContent()).andReturn();
-        var session=(org.springframework.mock.web.MockHttpSession) registered.getRequest().getSession(false);
-        var profile=get("/api/auth/me");
-        if(session!=null)profile.session(session);
-        mvc.perform(profile).andExpect(status().isUnauthorized());
+        assertThat(registered.getRequest().getSession(false)).isNull();
+        mvc.perform(get("/api/auth/me")).andExpect(status().isUnauthorized());
         mvc.perform(postJson("/api/auth/register",body)).andExpect(status().isConflict());
-        var signedIn=mvc.perform(post("/api/auth/login").with(csrf()).param("username","newpublicpatient@example.test")
-            .param("password","SecurePass2026!")).andExpect(status().isOk()).andReturn();
-        var authSession=(org.springframework.mock.web.MockHttpSession)signedIn.getRequest().getSession(false);
-        mvc.perform(get("/api/auth/me").session(authSession)).andExpect(jsonPath("$.user.role").value("PATIENT"));
-        mvc.perform(get("/api/patients").session(authSession)).andExpect(jsonPath("$.length()").value(1))
-            .andExpect(jsonPath("$[0].specialistId").doesNotExist());
     }
+
+    @Test void trustedDeviceIsSingleUseAndCanBeRevoked() throws Exception {
+        String patient="/api/patients/"+patientId();
+        mvc.perform(postJson(patient+"/device-invite",Map.of()).with(user("doctor")))
+            .andExpect(status().isForbidden());
+        var issued=mvc.perform(postJson(patient+"/device-invite",Map.of()).with(user("admin")))
+            .andExpect(status().isOk()).andReturn();
+        String token=json.readTree(issued.getResponse().getContentAsString()).get("token").asText();
+        var paired=mvc.perform(postJson("/api/auth/device",Map.of("token",token)))
+            .andExpect(status().isNoContent()).andExpect(cookie().httpOnly("rehab_device",true)).andReturn();
+        var device=paired.getResponse().getCookie("rehab_device");
+        mvc.perform(postJson("/api/auth/device",Map.of("token",token))).andExpect(status().isBadRequest());
+        mvc.perform(post("/api/auth/login").with(csrf()).param("username","patient").param("password","Patient2026!"))
+            .andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/auth/me").cookie(device)).andExpect(status().isOk())
+            .andExpect(jsonPath("$.user.role").value("PATIENT"));
+        mvc.perform(get("/api/patients").cookie(device)).andExpect(jsonPath("$.length()").value(1));
+        Long otherPatient=patients.findByAccountUsername("patient2").orElseThrow().id;
+        String secondInvite=issueDeviceInvite(patient);
+        var second=mvc.perform(postJson("/api/auth/device",Map.of("token",secondInvite,"name","Мой телефон")))
+            .andExpect(status().isNoContent()).andReturn().getResponse().getCookie("rehab_device");
+        var listed=mvc.perform(get(patient+"/devices").with(user("admin"))).andExpect(status().isOk())
+            .andExpect(jsonPath("$.devices.length()").value(2))
+            .andExpect(jsonPath("$.devices[0].name").value("Мой телефон")).andReturn();
+        var list=json.readTree(listed.getResponse().getContentAsString()).get("devices");
+        long firstId=list.get(1).get("id").asLong();
+        mvc.perform(delete("/api/patients/"+otherPatient+"/devices/"+firstId).with(csrf()).with(user("admin")))
+            .andExpect(status().isNotFound());
+        mvc.perform(delete(patient+"/devices/"+firstId).with(csrf()).with(user("admin"))).andExpect(status().isNoContent());
+        mvc.perform(get("/api/auth/me").cookie(device)).andExpect(status().isUnauthorized());
+        mvc.perform(get("/api/auth/me").cookie(second)).andExpect(status().isOk());
+        String otherInvite=issueDeviceInvite("/api/patients/"+otherPatient);
+        mvc.perform(postJson("/api/auth/device",Map.of("token",otherInvite)).cookie(second)).andExpect(status().isConflict());
+        var pause=mvc.perform(post("/api/auth/logout").with(csrf()).cookie(second))
+            .andExpect(status().isNoContent()).andExpect(cookie().httpOnly("rehab_device_paused",true))
+            .andReturn().getResponse().getCookie("rehab_device_paused");
+        mvc.perform(get("/api/auth/me").cookie(second,pause)).andExpect(status().isUnauthorized());
+        mvc.perform(get(patient+"/devices").with(user("admin"))).andExpect(jsonPath("$.devices.length()").value(1));
+        mvc.perform(post("/api/auth/device/resume").cookie(second,pause)).andExpect(status().isForbidden());
+        mvc.perform(post("/api/auth/device/resume").with(csrf()).cookie(second,pause))
+            .andExpect(status().isNoContent()).andExpect(cookie().maxAge("rehab_device_paused",0));
+        mvc.perform(get("/api/patients").cookie(second)).andExpect(jsonPath("$[0].id").value(patientId()));
+        var switched=mvc.perform(postJson("/api/auth/device",Map.of("token",otherInvite)).cookie(second,pause))
+            .andExpect(status().isNoContent()).andReturn().getResponse().getCookie("rehab_device");
+        mvc.perform(get("/api/patients").cookie(switched)).andExpect(jsonPath("$[0].id").value(otherPatient));
+        mvc.perform(post("/api/auth/device/resume").with(csrf()).cookie(second,pause)).andExpect(status().isUnauthorized());
+        mvc.perform(post("/api/auth/logout").param("forget","true").with(csrf()).cookie(switched))
+            .andExpect(status().isNoContent()).andExpect(cookie().maxAge("rehab_device",0));
+        mvc.perform(post("/api/auth/device/resume").with(csrf()).cookie(switched)).andExpect(status().isUnauthorized());
+    }
+
+    private String issueDeviceInvite(String patientPath) throws Exception {
+        var issued=mvc.perform(postJson(patientPath+"/device-invite",Map.of()).with(user("admin")))
+            .andExpect(status().isOk()).andReturn();
+        return json.readTree(issued.getResponse().getContentAsString()).get("token").asText();
+    }
+
     @Test @WithMockUser("doctor") void staffCannotUseAdminOperations() throws Exception {
         Long doctor=accounts.findByUsername("doctor").orElseThrow().id;
         mvc.perform(postJson("/api/specialists",credentials("restricted@example.test"))).andExpect(status().isForbidden());
