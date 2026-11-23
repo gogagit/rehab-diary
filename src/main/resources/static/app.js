@@ -143,7 +143,7 @@ function registrationForm(){
 async function start(me){me??=await api('/auth/me');state.user=me.user;state.today=me.today;state.patients=await api('/patients');state.exercises=await api('/exercises');
  if(!state.patients.some(p=>p.id===state.patientId))state.patientId=state.patients[0]?.id??null;
  if(!staff()&&['patients','exercises','audit'].includes(state.tab))state.tab='overview';
- if(state.user.role!=='ADMIN'&&['audit','specialists'].includes(state.tab))state.tab='overview';
+ if(state.user.role!=='ADMIN'&&['audit','specialists','alert-settings'].includes(state.tab))state.tab='overview';
  await loadPlans();if(location.hash==='#cabinet')render();
 }
 async function loadPlans(){state.plans=state.patientId?await api('/patients/'+state.patientId+'/plans'):[];
@@ -152,7 +152,7 @@ async function loadDetail(){if(state.planId){[state.detail,state.progress]=await
 function patient(){return state.patients.find(p=>p.id===state.patientId);}
 function bind(selector,action){document.querySelectorAll(selector).forEach(b=>b.onclick=()=>Promise.resolve().then(()=>action(b)).catch(e=>toast(e.message)));}
 function render(){
- const tabs=[['overview','Обзор'],['plans','Планы реабилитации'],['diary','Дневник занятий'],['progress',staff()?'Прогресс пациента':'Мой прогресс']];if(staff())tabs.push(['patients','Пациенты'],['exercises','Упражнения']);if(state.user.role==='ADMIN')tabs.push(['specialists','Специалисты'],['audit','Журнал действий']);
+ const tabs=[['overview','Обзор'],['plans','Планы реабилитации'],['diary','Дневник занятий'],['progress',staff()?'Прогресс пациента':'Мой прогресс']];if(staff())tabs.push(['patients','Пациенты'],['exercises','Упражнения']);if(state.user.role==='ADMIN')tabs.push(['specialists','Специалисты'],['alert-settings','Настройки уведомлений'],['audit','Журнал действий']);
  tabs.push(['chat','Сообщения']);
  const contextual=['overview','plans','diary','progress'].includes(state.tab);
  const picker=!contextual?'':staff()&&state.patients.length?'<label>Пациент <select id="patient-picker" aria-label="Выбрать пациента">'+state.patients.map(p=>'<option value="'+p.id+'" '+(p.id===state.patientId?'selected':'')+'>'+esc(p.fullName)+'</option>').join('')+'</select></label>':staff()?'':'<p>Ваш специалист: '+esc(patient()?.specialistName||'не назначен')+'</p>';
@@ -162,7 +162,7 @@ function render(){
  if($('#forget-device'))$('#forget-device').onclick=()=>confirmAction('Забыть устройство?',
   'При следующем входе в этом браузере понадобится новая ссылка от администратора.',()=>logout(true));
  if($('#patient-picker'))$('#patient-picker').onchange=async e=>{state.patientId=Number(e.target.value);state.planId=null;try{await loadPlans();render()}catch(e){toast(e.message)}};
- ({overview,plans:plansPage,diary,progress:progressPage,patients:patientsPage,exercises:exercisesPage,specialists:specialistsPage,audit:auditPage,chat:chatPage}[state.tab]||overview)();
+ ({overview,plans:plansPage,diary,progress:progressPage,patients:patientsPage,exercises:exercisesPage,specialists:specialistsPage,audit:auditPage,'alert-settings':alertSettingsPage,chat:chatPage}[state.tab]||overview)();
  if(state.tab!=='chat')void refreshThreads();
 }
 async function logout(forget=false){
@@ -193,6 +193,67 @@ function overview(){
  '<section class="hero"><div><div class="eyebrow">'+(p?names[p.status]+' · '+fmt(p.startsOn)+' — '+fmt(p.endsOn):'Начало пути')+'</div><h2>'+esc(p?.title||'План пока не создан')+'</h2><p>'+esc(p?.goal||(staff()?'Создайте план и добавьте индивидуальные назначения.':'Специалист подготовит для вас план занятий.'))+'</p></div><div class="hero-mark" aria-hidden="true">↗</div></section>'+stats()+
  '<div class="grid"><section class="card"><div class="card-head"><h2>Занятия на сегодня</h2><small>'+items.length+' назначений</small></div>'+tasks+'<div class="note">Изменения программы обсуждайте со своим специалистом.</div></section><section class="card"><div class="card-head"><h2>Ритм занятий</h2></div>'+[['Выполнено',state.progress?.adherence],['С достижением цели',state.progress?.targetAchievement]].map(([t,n])=>'<div class="summary-line"><span>'+t+'</span><strong>'+num(n)+'%</strong></div><div class="track"><span style="width:'+Math.min(100,n||0)+'%"></span></div>').join('')+'<p class="note">Это показатели ведения дневника и выполнения плана. Они не являются процентом выздоровления.</p><button data-go="progress">Посмотреть динамику →</button></section></div>';
  wireGo();bind('[data-entry]',b=>entryForm(Number(b.dataset.entry)));
+ if(staff()){
+  const panel=document.createElement('section');panel.className='card';panel.id='patient-alerts';panel.style.marginTop='24px';
+  panel.textContent='Загрузка изменений показателей…';$('#content').prepend(panel);
+  void loadPatientAlerts(panel);
+ }
+}
+async function loadPatientAlerts(panel){
+ try{
+  const alerts=await api('/alerts');
+  if(!panel.isConnected)return;
+  const priority={RED:0,YELLOW:1,INSUFFICIENT:2,NONE:3};
+  alerts.sort((a,b)=>priority[a.result.level]-priority[b.result.level]);
+  const labels={RED:'Ухудшение показателей',YELLOW:'Стагнация показателей',INSUFFICIENT:'Недостаточно данных',NONE:'Условия уведомления не выполнены'};
+  const redCount=alerts.filter(a=>a.result.level==='RED').length;
+  const yellowCount=alerts.filter(a=>a.result.level==='YELLOW').length;
+  panel.innerHTML='<h2>Изменение показателей дневника</h2><p class="muted">Сравнение двух периодов в рамках активного плана.</p>'+
+   '<dl class="alert-counts" aria-label="Количество пациентов">'+
+   '<div class="red-count"><dt>Пациенты с ухудшением</dt><dd>'+redCount+'</dd></div>'+
+   '<div class="yellow-count"><dt>Пациенты со стагнацией</dt><dd>'+yellowCount+'</dd></div></dl>'+
+   (alerts.length?alerts.map(a=>{
+    const r=a.result;
+    const periods=r.previous?'<small>'+fmt(r.previous.from)+' — '+fmt(r.previous.until)+' / '+fmt(r.recent.from)+' — '+fmt(r.recent.until)+'</small>'+
+     '<p>Боль '+num(r.previous.pain)+' → '+num(r.recent.pain)+
+     ' · Самочувствие '+num(r.previous.wellbeing)+' → '+num(r.recent.wellbeing)+
+     ' · Выполнение нагрузки '+num(r.previous.load)+'% → '+num(r.recent.load)+'%</p>':'';
+    return '<article class="diary-alert '+r.level+'"><strong>'+esc(a.patientName)+' · '+labels[r.level]+'</strong>'+
+     '<p>'+esc(r.message)+'</p>'+periods+(a.planId?'<button data-alert-patient="'+a.patientId+'" data-alert-plan="'+a.planId+'">Открыть дневник</button>':'')+'</article>';
+   }).join(''):'<p>Нет доступных пациентов.</p>');
+  panel.querySelectorAll('[data-alert-patient]').forEach(b=>b.onclick=async()=>{
+   try{state.patientId=Number(b.dataset.alertPatient);state.planId=Number(b.dataset.alertPlan);state.tab='diary';await loadPlans();render();}
+   catch(e){toast(e.message);}
+  });
+ }catch(e){if(panel.isConnected)panel.textContent=e.message;}
+}
+async function alertSettingsPage(){
+ const panel=$('#content');
+ panel.innerHTML=heading('Настройки уведомлений','Параметры сравнения записей дневника.')+'<p>Загрузка…</p>';
+ try{
+  const config=await api('/alert-settings');
+  if(!panel.isConnected||state.tab!=='alert-settings')return;
+  panel.innerHTML=heading('Настройки уведомлений','Изменения применяются ко всем пациентам при следующем расчёте.')+
+   '<section class="card"><p>Красное — рост средней боли или снижение среднего самочувствия на заданный порог. Жёлтое — изменения обоих показателей меньше границы стабильности, а рост выполнения нагрузки ниже заданного порога.</p>'+
+   '<p class="form-hint">Используются дни с записями. Несколько упражнений за день объединяются. Для сравнения нужно вдвое больше дней, чем размер одного периода. Пропуски записей не означают ухудшение.</p>'+
+   '<form id="alert-settings-form">'+
+   field('Дней с записями в каждом периоде','daysPerWindow','number',config.daysPerWindow,'required min="1" max="14" step="1"')+
+   field('Порог ухудшения боли или самочувствия, баллы','deterioration','number',config.deterioration,'required min="0.1" max="10" step="0.1"')+
+   field('Граница стабильности боли и самочувствия, баллы','stableBand','number',config.stableBand,'required min="0.1" max="10" step="0.1"')+
+   field('Минимальный рост выполнения нагрузки, процентные пункты','loadGrowth','number',config.loadGrowth,'required min="0.1" max="100" step="0.1"')+
+   '<p role="status" id="settings-status"></p><button type="submit" class="primary">Сохранить параметры</button></form></section>';
+  $('#alert-settings-form').onsubmit=async event=>{
+   event.preventDefault();
+   const button=event.submitter,status=$('#settings-status');
+   button.disabled=true;status.textContent='';
+   try{
+    const body=Object.fromEntries([...new FormData(event.target)].map(([k,v])=>[k,Number(v)]));
+    const saved=await api('/alert-settings','PUT',{...body,version:config.version});
+    config.version=saved.version;status.textContent='Параметры сохранены.';
+   }catch(e){status.textContent=e.message;}
+   finally{button.disabled=false;}
+  };
+ }catch(e){if(panel.isConnected)panel.textContent=e.message;}
 }
 function selector(){return '<div class="plan-select"><label for="plan-picker">План</label><select id="plan-picker">'+state.plans.map(p=>'<option value="'+p.id+'" '+(p.id===state.planId?'selected':'')+'>'+esc(p.title)+' · '+names[p.status]+'</option>').join('')+'</select>'+(state.planId?'<a href="/api/plans/'+state.planId+'/export" download>Скачать CSV ↓</a>':'')+'</div>';}
 function wireSelector(){if($('#plan-picker'))$('#plan-picker').onchange=async e=>{state.planId=Number(e.target.value);try{await loadDetail();render()}catch(e){toast(e.message)}};}

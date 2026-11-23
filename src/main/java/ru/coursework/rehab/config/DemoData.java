@@ -23,6 +23,9 @@ public class DemoData implements CommandLineRunner {
         if(accounts.count()==0) seedBase();
         if(demo) accounts.findByUsername("doctor").filter(a->a.deletedAt==null).ifPresent(this::seedFinishedCourses);
         seedExerciseCatalog();
+        if (demo) accounts.findByUsername("doctor")
+            .filter(a -> a.deletedAt == null && a.role == Account.Role.SPECIALIST)
+            .ifPresent(this::seedAlertExamples);
     }
     private void seedBase() {
         account("admin","Администратор",Account.Role.ADMIN,adminPassword);
@@ -53,6 +56,61 @@ public class DemoData implements CommandLineRunner {
             }index++;
         }
     }
+    private void seedAlertExamples(Account doctor) {
+        Exercise walking = exercises.findAllByOrderByTitle().stream()
+            .filter(e -> "Ходьба с сопровождением".equals(e.title)).findFirst().orElseThrow();
+        seedAlertCourse("demo-alert-pain", "Лебедева Вера Павловна", LocalDate.of(1963, 6, 12),
+            "Восстановление после травмы", doctor, walking, 2, 6, 7, 7, 6,
+            "Сегодня боль сильнее, чем в начале недели.");
+        seedAlertCourse("demo-alert-wellbeing", "Зайцев Виктор Андреевич", LocalDate.of(1959, 4, 23),
+            "Реабилитация после инсульта", doctor, walking, 3, 3, 8, 4, 6,
+            "Боль прежняя, но быстрее устаю. Сегодня закончил занятие раньше.");
+        seedAlertCourse("demo-plateau-nina", "Фомина Нина Ильинична", LocalDate.of(1957, 7, 14),
+            "Реабилитация после инсульта", doctor, walking, 3, 3, 6, 6, 10,
+            "Прошла тот же маршрут за десять минут. По ощущениям всё как прежде.");
+        seedAlertCourse("demo-plateau-oleg", "Денисов Олег Петрович", LocalDate.of(1972, 11, 3),
+            "Восстановление после травмы", doctor, walking, 4, 4, 7, 7, 10,
+            "Выполнил обычный объём. Боль осталась на прежнем уровне.");
+    }
+
+    private void seedAlertCourse(String login, String name, LocalDate birth, String reason, Account doctor,
+                                 Exercise exercise, int initialPain, int recentPain, int initialWellbeing,
+                                 int recentWellbeing, int recentMinutes, String recentComment) {
+        if (accounts.existsByUsername(login)) return;
+        LocalDate today = LocalDate.now(clock);
+        RehabPlan plan = new RehabPlan();
+        plan.patient = patient(login, name, doctor, reason, birth);
+        plan.title = "Дневник прогулок";
+        plan.goal = "Отмечать переносимость занятий";
+        plan.startsOn = today.minusDays(5);
+        plan.endsOn = today.plusWeeks(4);
+        plan.status = RehabPlan.Status.ACTIVE;
+        plans.save(plan);
+
+        Assignment walk = new Assignment();
+        walk.plan = plan;
+        walk.exercise = exercise;
+        walk.title = exercise.title;
+        walk.instructions = exercise.instructions;
+        walk.unit = exercise.unit;
+        walk.targetAmount = 10;
+        assignments.save(walk);
+
+        for (int day = 0; day < 6; day++) {
+            boolean recent = day >= 3;
+            DiaryEntry entry = new DiaryEntry();
+            entry.assignment = walk;
+            entry.performedOn = plan.startsOn.plusDays(day);
+            entry.status = DiaryEntry.Status.DONE;
+            entry.actualAmount = recent ? recentMinutes : walk.targetAmount;
+            entry.pain = recent ? recentPain : initialPain;
+            entry.wellbeing = recent ? recentWellbeing : initialWellbeing;
+            entry.comment = recent ? recentComment : "Удалось пройти весь запланированный маршрут.";
+            entry.updatedAt = OffsetDateTime.now(clock).minusDays(5 - day);
+            entries.save(entry);
+        }
+    }
+
     private void seedFinishedCourses(Account doctor) {
         finishedCourse("demo-recovery-alina","Крылова Алина Олеговна",doctor,LocalDate.of(1988,3,18),
             "Восстановление после травмы","Возвращение к привычным прогулкам",

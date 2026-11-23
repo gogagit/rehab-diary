@@ -40,6 +40,39 @@ class ApiIntegrationTest {
     private MockHttpServletRequestBuilder putJson(String path,Object body) throws Exception {
         return put(path).with(csrf()).contentType("application/json").content(json.writeValueAsString(body));
     }
+    @Test @WithMockUser("admin") void administratorPersistsAlertThresholds() throws Exception {
+        var response = mvc.perform(get("/api/alert-settings")).andExpect(status().isOk()).andReturn();
+        long version = json.readTree(response.getResponse().getContentAsString()).get("version").asLong();
+        var body = Map.of("daysPerWindow", 4, "deterioration", 3, "stableBand", 1, "loadGrowth", 6, "version", version);
+        mvc.perform(putJson("/api/alert-settings", body)).andExpect(status().isOk());
+        mvc.perform(get("/api/alert-settings")).andExpect(jsonPath("$.daysPerWindow").value(4));
+        mvc.perform(putJson("/api/alert-settings", body)).andExpect(status().isConflict());
+    }
+    @Test @WithMockUser("doctor2") void specialistOnlySeesAssignedAlerts() throws Exception {
+        mvc.perform(get("/api/alerts")).andExpect(status().isOk())
+            .andExpect(jsonPath("$[?(@.patientId == " + patientId() + ")]").isEmpty());
+        mvc.perform(get("/api/alert-settings")).andExpect(status().isForbidden());
+    }
+    @Test @WithMockUser("patient") void patientCannotReadStaffAlerts() throws Exception {
+        mvc.perform(get("/api/alerts")).andExpect(status().isForbidden());
+    }
+    @Test @WithMockUser("doctor") void demoDiaryChangesProduceTwoRedAlerts() throws Exception {
+        var response = mvc.perform(get("/api/alerts")).andExpect(status().isOk()).andReturn();
+        var alerts = json.readTree(response.getResponse().getContentAsByteArray());
+        for (String login : List.of("demo-alert-pain", "demo-alert-wellbeing")) {
+            long id = patients.findByAccountUsername(login).orElseThrow().id;
+            var matches = alerts.findValues("patientId");
+            assertThat(matches.stream().filter(v -> v.asLong() == id).count()).isEqualTo(1);
+            for (var alert : alerts) {
+                if (alert.path("patientId").asLong() != id) continue;
+                var result = alert.path("result");
+                assertThat(result.path("level").asText()).isEqualTo("RED");
+                String metric = login.endsWith("pain") ? "pain" : "wellbeing";
+                double change = result.path("recent").path(metric).asDouble() - result.path("previous").path(metric).asDouble();
+                assertThat(change).isEqualTo(metric.equals("pain") ? 4.0 : -4.0);
+            }
+        }
+    }
     @Test void unauthenticatedCannotRead() throws Exception { mvc.perform(get("/api/patients")).andExpect(status().isUnauthorized()); }
     @Test void publicPageAndTokenAvailable() throws Exception {
         mvc.perform(get("/")).andExpect(status().isOk());
